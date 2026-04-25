@@ -84,6 +84,69 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+    if (req.url.startsWith("/probe")) {
+    const query = getQuery(req.url);
+
+    if (query.key !== API_KEY) {
+      sendJson(res, 401, {
+        ok: false,
+        error: "Unauthorized. Please provide correct key."
+      });
+      return;
+    }
+
+    const targets = [
+      "https://audi2c.faw-vw.com/mapi/user/v1/account/login",
+      "https://audi2c.faw-vw.com/mapi/vehicle/v1/vehicle/list",
+      "https://audi2c.faw-vw.com/capi/v1/user/mine",
+      "https://mbboauth-1d.prd.cn.vwg-connect.cn/mbbcoauth/mobile/oauth2/v1/token"
+    ];
+
+    const results = [];
+
+    for (const url of targets) {
+      const startedAt = Date.now();
+
+      try {
+        const response = await fetch(url, {
+          method: "GET",
+          headers: {
+            "User-Agent": "MyAuDi/4.0 CFNetwork/1390 Darwin/22.0.0",
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+          }
+        });
+
+        const text = await response.text();
+
+        results.push({
+          url,
+          ok: true,
+          status: response.status,
+          statusText: response.statusText,
+          durationMs: Date.now() - startedAt,
+          bodyPreview: text.slice(0, 300)
+        });
+      } catch (error) {
+        results.push({
+          url,
+          ok: false,
+          durationMs: Date.now() - startedAt,
+          error: String(error)
+        });
+      }
+    }
+
+    sendJson(res, 200, {
+      ok: true,
+      message: "Audi endpoint probe finished",
+      time: new Date().toISOString(),
+      results
+    });
+
+    return;
+  }
+  
   if (req.url.startsWith("/status")) {
     const query = getQuery(req.url);
 
