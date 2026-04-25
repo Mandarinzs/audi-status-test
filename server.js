@@ -2,7 +2,8 @@ const http = require("http");
 
 const PORT = process.env.PORT || 3000;
 
-// 先做一个测试用密码，后面你可以改
+// 推荐在 Render 的 Environment Variables 里设置 API_KEY。
+// 如果你没设置，默认密码就是 test123456。
 const API_KEY = process.env.API_KEY || "test123456";
 
 function sendJson(res, statusCode, data) {
@@ -13,24 +14,14 @@ function sendJson(res, statusCode, data) {
   res.end(JSON.stringify(data, null, 2));
 }
 
-function getQuery(url) {
-  const result = {};
-  const questionIndex = url.indexOf("?");
+function parseUrl(req) {
+  const host = req.headers.host || "localhost";
+  return new URL(req.url, `https://${host}`);
+}
 
-  if (questionIndex === -1) {
-    return result;
-  }
-
-  const queryString = url.slice(questionIndex + 1);
-
-  for (const part of queryString.split("&")) {
-    const [key, value] = part.split("=");
-    if (key) {
-      result[decodeURIComponent(key)] = decodeURIComponent(value || "");
-    }
-  }
-
-  return result;
+function checkKey(url) {
+  const key = url.searchParams.get("key");
+  return key === API_KEY;
 }
 
 function getMockAudiStatus() {
@@ -74,98 +65,135 @@ function getMockAudiStatus() {
   };
 }
 
+async function probeAudiEndpoints() {
+  const targets = [
+    {
+      name: "一汽奥迪登录接口",
+      url: "https://audi2c.faw-vw.com/mapi/user/v1/account/login",
+      method: "GET"
+    },
+    {
+      name: "一汽奥迪车辆列表接口",
+      url: "https://audi2c.faw-vw.com/mapi/vehicle/v1/vehicle/list",
+      method: "GET"
+    },
+    {
+      name: "一汽奥迪个人信息接口",
+      url: "https://audi2c.faw-vw.com/capi/v1/user/mine",
+      method: "GET"
+    },
+    {
+      name: "大众 OAuth Token 接口",
+      url: "https://mbboauth-1d.prd.cn.vwg-connect.cn/mbbcoauth/mobile/oauth2/v1/token",
+      method: "GET"
+    }
+  ];
+
+  const results = [];
+
+  for (const target of targets) {
+    const startedAt = Date.now();
+
+    try {
+      const response = await fetch(target.url, {
+        method: target.method,
+        headers: {
+          "User-Agent": "MyAuDi/4.0 CFNetwork/1390 Darwin/22.0.0",
+          "Accept": "application/json, text/plain, */*",
+          "Content-Type": "application/json"
+        }
+      });
+
+      const text = await response.text();
+
+      results.push({
+        name: target.name,
+        url: target.url,
+        ok: true,
+        status: response.status,
+        statusText: response.statusText,
+        durationMs: Date.now() - startedAt,
+        bodyPreview: text.slice(0, 300)
+      });
+    } catch (error) {
+      results.push({
+        name: target.name,
+        url: target.url,
+        ok: false,
+        durationMs: Date.now() - startedAt,
+        error: String(error)
+      });
+    }
+  }
+
+  return results;
+}
+
 const server = http.createServer(async (req, res) => {
-  if (req.url === "/") {
-    sendJson(res, 200, {
-      ok: true,
-      message: "Audi status server is alive",
-      try: "/status?key=你的密码"
-    });
-    return;
-  }
+  try {
+    const url = parseUrl(req);
 
-    if (req.url.startsWith("/probe")) {
-    const query = getQuery(req.url);
-
-    if (query.key !== API_KEY) {
-      sendJson(res, 401, {
-        ok: false,
-        error: "Unauthorized. Please provide correct key."
+    if (url.pathname === "/") {
+      sendJson(res, 200, {
+        ok: true,
+        message: "Audi status server is alive",
+        routes: {
+          status: "/status?key=你的密码",
+          probe: "/probe?key=你的密码"
+        },
+        keyHint: "如果你没有在 Render 设置 API_KEY，默认 key 是 test123456。",
+        time: new Date().toISOString()
       });
       return;
     }
 
-    const targets = [
-      "https://audi2c.faw-vw.com/mapi/user/v1/account/login",
-      "https://audi2c.faw-vw.com/mapi/vehicle/v1/vehicle/list",
-      "https://audi2c.faw-vw.com/capi/v1/user/mine",
-      "https://mbboauth-1d.prd.cn.vwg-connect.cn/mbbcoauth/mobile/oauth2/v1/token"
-    ];
-
-    const results = [];
-
-    for (const url of targets) {
-      const startedAt = Date.now();
-
-      try {
-        const response = await fetch(url, {
-          method: "GET",
-          headers: {
-            "User-Agent": "MyAuDi/4.0 CFNetwork/1390 Darwin/22.0.0",
-            "Accept": "application/json",
-            "Content-Type": "application/json"
-          }
-        });
-
-        const text = await response.text();
-
-        results.push({
-          url,
-          ok: true,
-          status: response.status,
-          statusText: response.statusText,
-          durationMs: Date.now() - startedAt,
-          bodyPreview: text.slice(0, 300)
-        });
-      } catch (error) {
-        results.push({
-          url,
+    if (url.pathname === "/status") {
+      if (!checkKey(url)) {
+        sendJson(res, 401, {
           ok: false,
-          durationMs: Date.now() - startedAt,
-          error: String(error)
+          error: "Unauthorized. Please provide correct key.",
+          hint: "访问格式应该是 /status?key=你的密码"
         });
+        return;
       }
+
+      sendJson(res, 200, getMockAudiStatus());
+      return;
     }
 
-    sendJson(res, 200, {
-      ok: true,
-      message: "Audi endpoint probe finished",
-      time: new Date().toISOString(),
-      results
-    });
+    if (url.pathname === "/probe") {
+      if (!checkKey(url)) {
+        sendJson(res, 401, {
+          ok: false,
+          error: "Unauthorized. Please provide correct key.",
+          hint: "访问格式应该是 /probe?key=你的密码"
+        });
+        return;
+      }
 
-    return;
-  }
-  
-  if (req.url.startsWith("/status")) {
-    const query = getQuery(req.url);
+      const results = await probeAudiEndpoints();
 
-    if (query.key !== API_KEY) {
-      sendJson(res, 401, {
-        ok: false,
-        error: "Unauthorized. Please provide correct key."
+      sendJson(res, 200, {
+        ok: true,
+        message: "Audi endpoint probe finished",
+        time: new Date().toISOString(),
+        results
       });
       return;
     }
 
-    sendJson(res, 200, getMockAudiStatus());
-    return;
+    sendJson(res, 404, {
+      ok: false,
+      error: "Not Found",
+      path: url.pathname,
+      availableRoutes: ["/", "/status?key=你的密码", "/probe?key=你的密码"]
+    });
+  } catch (error) {
+    sendJson(res, 500, {
+      ok: false,
+      error: String(error)
+    });
   }
-
-  sendJson(res, 404, {
-    ok: false,
-    error: "Not Found"
-  });
 });
 
 server.listen(PORT, () => {
